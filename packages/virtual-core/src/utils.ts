@@ -2,6 +2,14 @@ export type NoInfer<A extends any> = [A][A extends any ? 0 : never]
 
 export type PartialKeys<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>
 
+
+/**
+ * 待缓存的高阶函数
+ * @param getDeps 这是一个函数，返回依赖数组
+ * @param fn 目标函数
+ * @param opts 
+ * @returns 带缓存的函数，多次执行(如果依赖数组没有变化直接返回上一次的缓存值，如果依赖数组变化了就重新执行fn,并将依赖项传递给fn)
+ */
 export function memo<TDeps extends ReadonlyArray<any>, TResult>(
   getDeps: () => [...TDeps],
   fn: (...args: NoInfer<[...TDeps]>) => TResult,

@@ -28,8 +28,10 @@ function useVirtualizerBase<
     ...options,
     onChange: (instance, sync) => {
       if (sync) {
+        // 正在滚动 使用flushSync 确保DOM立即更新
         flushSync(rerender)
       } else {
+        // 停止滚动 通过 useReducer dispatch触发重渲染
         rerender()
       }
       options.onChange?.(instance, sync)

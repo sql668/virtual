@@ -51,6 +51,8 @@ function useVirtualizerBase<
       virtualizer.setOptions({
         ...options,
         onChange: (instance, sync) => {
+          // 手动触发响应式更新
+          // triggerRef 强制触发依赖于一个shallowRef的副作用，通常在对浅引用的内部进行深度变更后使用
           triggerRef(state)
           options.onChange?.(instance, sync)
         },
@@ -63,7 +65,8 @@ function useVirtualizerBase<
       immediate: true,
     },
   )
-
+  // 自动清理副作用函数
+  // onScopeDispose在当前活跃的effect作用域上注册处理函数，当相关的effect作用域停止时会调用整个回调函数。该方法可以作为onUnmounted的替代品
   onScopeDispose(cleanup)
 
   return state

@@ -2,8 +2,32 @@ import { approxEqual, debounce, memo, notUndefined } from './utils'
 
 export * from './utils'
 
-//
+/**
+ * ```
+ *
+ *   1. 测量元素：根据传递的预估大小计算每一个滚动项的位置信息，生成一个VirtualItem对象(记录每一个元素的key,index,起始)，生成measurements数组，该数组记录每一个item的VirtualItem数据
+ *   2. 确定可视区域的渲染起始和结束索引。
+ *          起始索引: 使用二分法，找出哪一个VirtualItem的start == 当前滚动偏移量
+ *          结束索引: 从起始索引位置向后找，最后一个满足该（measurements[endIndex]!.end < 当前滚动偏移量 + 父元素的尺寸）条件的
+ *   3. 根据可视区域的起始和结束索引，再结合缓冲区数量配置，从measurements数组中取出对应的数据生成virtualItems
+ *   4. 当父元素尺寸变化或者发生滚动事件时，重新计算更新当前渲染范围
+ *   5. 触发重渲染
+ *
+ *
+ *  如果是动态模式(子元素尺寸会变化)
+ *  1. 获取每一个滚动项的dom实例，更新elementsCache this.elementsCache.set(key, node)
+ *  2. 重新测量元素尺寸
+ *      如果尺寸发生变化，更新缓存中的值
+ *  3. 监听node的尺寸变化，重新测量元素尺寸
+ *  4. 触发重渲染
+ *
+ *
+ * ```
+ */
 
+/**
+ * 滚动方向
+ */
 type ScrollDirection = 'forward' | 'backward'
 
 type ScrollAlignment = 'start' | 'center' | 'end' | 'auto'
@@ -19,21 +43,51 @@ type ScrollToOffsetOptions = ScrollToOptions
 
 type ScrollToIndexOptions = ScrollToOptions
 
+/**
+ * 真实渲染范围(可视区域 + 上下缓冲区)
+ */
 export interface Range {
+  /**
+   * 可视区域起始索引
+   */
   startIndex: number
+  /**
+   * 可视区域结束索引
+   */
   endIndex: number
+  /**
+   * 上缓冲区/下缓冲区 缓冲元素个数
+   */
   overscan: number
+  /**
+   * 总个数
+   */
   count: number
 }
 
 type Key = number | string | bigint
 
+/**
+ * 虚拟元素
+ */
 export interface VirtualItem {
   key: Key
   index: number
+  /**
+   * 起始位置
+   */
   start: number
+  /**
+   * 结束位置
+   */
   end: number
+  /**
+   * 尺寸(宽度/高度)
+   */
   size: number
+  /**
+   * 元素在哪一个泳道
+   */
   lane: number
 }
 
@@ -42,8 +96,11 @@ export interface Rect {
   height: number
 }
 
-//
-
+/**
+ * 获取元素最终的尺寸 宽度和高度
+ * @param element
+ * @returns
+ */
 const getRect = (element: HTMLElement): Rect => {
   const { offsetWidth, offsetHeight } = element
   return { width: offsetWidth, height: offsetHeight }
@@ -51,19 +108,28 @@ const getRect = (element: HTMLElement): Rect => {
 
 export const defaultKeyExtractor = (index: number) => index
 
+/**
+ * 获取真实渲染元素索引范围（可视区域 + 上缓冲区 + 下缓冲区元素）的默认方案
+ * @param range
+ * @returns
+ */
 export const defaultRangeExtractor = (range: Range) => {
   const start = Math.max(range.startIndex - range.overscan, 0)
   const end = Math.min(range.endIndex + range.overscan, range.count - 1)
-
   const arr = []
-
   for (let i = start; i <= end; i++) {
     arr.push(i)
   }
-
   return arr
 }
 
+/**
+ * ResizeObserver监听instance.scrollElement
+ * 当instance.scrollElement(滚动条所在的元素)的尺寸发生变化时执行 cb回调，返回最新的宽高尺寸
+ * @param instance
+ * @param cb
+ * @returns
+ */
 export const observeElementRect = <T extends Element>(
   instance: Virtualizer<T, any>,
   cb: (rect: Rect) => void,
@@ -114,9 +180,16 @@ export const observeElementRect = <T extends Element>(
 }
 
 const addEventListenerOptions = {
+  // 告诉浏览器，内部代码不会调用 preventDefault 阻止默认行为，让浏览器放心开启优化。让滚动更加丝滑
   passive: true,
 }
 
+/**
+ * instance.scrollElement 是 window时，浏览器窗口resize事件，返回浏览器窗口的尺寸
+ * @param instance
+ * @param cb
+ * @returns
+ */
 export const observeWindowRect = (
   instance: Virtualizer<Window, any>,
   cb: (rect: Rect) => void,
@@ -138,11 +211,18 @@ export const observeWindowRect = (
   }
 }
 
+// 当前环境是否支持Scrollend事件
 const supportsScrollend =
   typeof window == 'undefined' ? true : 'onscrollend' in window
 
 type ObserveOffsetCallBack = (offset: number, isScrolling: boolean) => void
 
+/**
+ * 当instance.scrollElement开始滚动或滚动结束时，回调cb返回scrollLeft 或 scrollTop
+ * @param instance
+ * @param cb
+ * @returns
+ */
 export const observeElementOffset = <T extends Element>(
   instance: Virtualizer<T, any>,
   cb: ObserveOffsetCallBack,
@@ -194,6 +274,13 @@ export const observeElementOffset = <T extends Element>(
   }
 }
 
+/**
+ * 当instance.scrollElement开始滚动或滚动结束时，回调cb返回scrollLeft 或 scrollTop
+ * 这里的instance.scrollElement为window
+ * @param instance
+ * @param cb
+ * @returns
+ */
 export const observeWindowOffset = (
   instance: Virtualizer<Window, any>,
   cb: ObserveOffsetCallBack,
@@ -242,11 +329,19 @@ export const observeWindowOffset = (
   }
 }
 
+/**
+ * 使用ResizeObserver监听每一个滚动子元素，当元素尺寸变化时，执行的回调函数，用于测量子元素的最新尺寸(宽度/高度)
+ * @param element
+ * @param entry
+ * @param instance
+ * @returns
+ */
 export const measureElement = <TItemElement extends Element>(
   element: TItemElement,
   entry: ResizeObserverEntry | undefined,
   instance: Virtualizer<any, TItemElement>,
 ) => {
+  debugger
   if (entry?.borderBoxSize) {
     const box = entry.borderBoxSize[0]
     if (box) {
@@ -262,6 +357,12 @@ export const measureElement = <TItemElement extends Element>(
   ]
 }
 
+/**
+ * 控制window滚动条滚动到指定位置
+ * @param offset
+ * @param param1
+ * @param instance
+ */
 export const windowScroll = <T extends Window>(
   offset: number,
   {
@@ -278,6 +379,12 @@ export const windowScroll = <T extends Window>(
   })
 }
 
+/**
+ * 控制滚动条滚到指定位置
+ * @param offset
+ * @param param1
+ * @param instance
+ */
 export const elementScroll = <T extends Element>(
   offset: number,
   {
@@ -298,9 +405,15 @@ export interface VirtualizerOptions<
   TScrollElement extends Element | Window,
   TItemElement extends Element,
 > {
-  // Required from the user
+  // 要虚拟化的项总数。
   count: number
+  /**
+   * 返回虚拟器的可滚动元素的函数。如果元素尚不可用，它可能会返回 null。
+   */
   getScrollElement: () => TScrollElement | null
+  /**
+   * 此函数传递每个项目的索引，并应返回每个项目的实际大小（如果要使用 virtualItem.measureElement 动态测量项目，则返回估计大小）。此度量值应返回宽度或高度，具体取决于虚拟器的方向。
+   */
   estimateSize: (index: number) => number
 
   // Required from the framework adapter (but can be overridden)
@@ -313,13 +426,25 @@ export interface VirtualizerOptions<
     instance: Virtualizer<TScrollElement, TItemElement>,
     cb: (rect: Rect) => void,
   ) => void | (() => void)
+  /**
+   * 当instance.scrollElement开始滚动或滚动结束时，回调cb返回scrollLeft 或 scrollTop
+   */
   observeElementOffset: (
     instance: Virtualizer<TScrollElement, TItemElement>,
     cb: ObserveOffsetCallBack,
   ) => void | (() => void)
   // Optional
   debug?: boolean
+  /**
+   * crollElement 的初始 Rect。如果您需要在 SSR 环境中运行虚拟器，这非常有用，否则 defaultalRect 将由 observeElementRect 实现在挂载时计算。
+   */
   initialRect?: Rect
+  /**
+   *当虚拟器的内部状态发生变化时触发的回调函数。它传递了虚拟器实例和 sync 参数。
+   * @param instance 虚拟器实例
+   * @param sync 滚动当前是否正在进行中。当滚动正在进行时，它是 true，当滚动停止或正在执行其他作（例如调整大小）时，它是 false。
+   * @returns
+   */
   onChange?: (
     instance: Virtualizer<TScrollElement, TItemElement>,
     sync: boolean,
@@ -329,23 +454,88 @@ export interface VirtualizerOptions<
     entry: ResizeObserverEntry | undefined,
     instance: Virtualizer<TScrollElement, TItemElement>,
   ) => number
+  /**
+   * 缓冲区，提起渲染的数目
+   * 要在可见区域上方和下方渲染的项目数。
+   * 增加此数字将增加呈现虚拟器所需的时间，但可能会降低滚动时在虚拟器顶部和底部看到缓慢呈现空白项的可能性。默认值为 1。
+   */
   overscan?: number
+  /**
+   * 虚拟滚动方向
+如果您的虚拟器是水平方向的，请将其设置为 true。
+   */
   horizontal?: boolean
+  /**
+   * 要应用于虚拟器开头的填充（以像素为单位）。
+   */
   paddingStart?: number
+  /**
+   * 要应用于虚拟器末尾的填充（以像素为单位）。
+   */
   paddingEnd?: number
+  /**
+   * 滚动到元素时要应用于虚拟器开头的填充（以像素为单位）。
+   */
   scrollPaddingStart?: number
+  /**
+   * 滚动到元素时要应用于虚拟器末尾的填充（以像素为单位）。
+   */
   scrollPaddingEnd?: number
+  /**
+   * 渲染时列表滚动到的位置。如果您在 SSR 环境中渲染虚拟器或有条件地渲染虚拟器，这将非常有用。
+   */
   initialOffset?: number | (() => number)
+  /**
+   * 此函数传递每个项的索引，并应返回该项的唯一键。此函数的默认功能是返回项的索引，但应尽可能覆盖此索引，以便为整个集中的每个项返回唯一标识符。应记住此函数以防止不必要的重新渲染。
+   * @param index
+   * @returns
+   */
   getItemKey?: (index: number) => Key
+  /**
+   * 当前渲染范围
+   * 此函数接收可见范围索引，并应返回要呈现的索引数组。如果您需要手动在虚拟器中添加或删除项目而不考虑可见范围，这很有用，例如。渲染粘性项目、页眉、页脚等。默认范围提取器实现将返回可见范围索引，并导出为 defaultRangeExtractor。
+   */
   rangeExtractor?: (range: Range) => Array<number>
+  /**
+   * ```
+   * 使用此选项，您可以指定滚动偏移的起点。通常，此值表示滚动元素的开头和列表开头之间的空间。
+   * 这在常见情况下特别有用，例如，当窗口虚拟器前面有一个标头，或者在单个滚动元素中使用多个虚拟器时。
+   * 如果您使用元素的绝对定位，则应考虑 CSS 转换中的 scrollMargin：
+   * ```css
+   * transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)`
+   * ```
+   *
+   * 要动态测量 scrollMargin 的值，您可以使用 getBoundingClientRect（） 或 ResizeObserver。这在虚拟列表上方的项目可能更改其高度的情况下非常有用。
+   *
+   */
   scrollMargin?: number
+  /**
+   * 此选项允许您设置虚拟化列表中项目之间的间距。它对于保持项目之间一致的视觉分离特别有用，而无需手动调整每个项目的边距或填充。该值以像素为单位指定。
+   */
   gap?: number
+
+  /**
+   *  索引属性名称，当元素的宽高不固定时，必须提供该属性配置，当元素尺寸变化时，根据该属性判断当前的元素索引
+   */
   indexAttribute?: string
   initialMeasurementsCache?: Array<VirtualItem>
+  /**
+   * ```
+   * 泳道： 渲染的时候可以多行/多列渲染。
+   * 例如： 在垂直方向上虚拟滚动的情况下，lanes：2 表示每行渲染两个元素，每一个宽度为 50%
+   *       在水平方向上虚拟滚动的情况下，lanes：2 表示每列渲染两个元素，每一个高度为 50%
+   * ```
+   */
   lanes?: number
   isScrollingResetDelay?: number
   useScrollendEvent?: boolean
+  /**
+   * 设置为 false 以禁用 scrollElement 观察器并重置虚拟器的状态
+   */
   enabled?: boolean
+  /**
+   * 是否反转水平滚动以支持从右到左的语言区域设置。
+   */
   isRtl?: boolean
   useAnimationFrameWithResizeObserver?: boolean
 }
@@ -359,10 +549,41 @@ export class Virtualizer<
   scrollElement: TScrollElement | null = null
   targetWindow: (Window & typeof globalThis) | null = null
   isScrolling = false
+  /**
+   *
+   * 记录每一个元素的位置信息(key、索引、起始位置、结束位置、宽度/高度)
+   * @type {Array<VirtualItem>}
+   * @memberof Virtualizer
+   */
   measurementsCache: Array<VirtualItem> = []
+  /**
+   * 记录每个滚动item的尺寸大小
+   *
+   * @private
+   * @memberof Virtualizer
+   */
   private itemSizeCache = new Map<Key, number>()
+  /**
+   * 大小发生变化，需要重新测量的元素的index集合
+   *
+   * @private
+   * @type {Array<number>}
+   * @memberof Virtualizer
+   */
   private pendingMeasuredCacheIndexes: Array<number> = []
+  /**
+   * 发生滚动的元素的尺寸
+   *
+   * @type {(Rect | null)}
+   * @memberof Virtualizer
+   */
   scrollRect: Rect | null = null
+  /**
+   * 发生滚动后，记录scrollLeft 或 scrollTop
+   *
+   * @type {(number | null)}
+   * @memberof Virtualizer
+   */
   scrollOffset: number | null = null
   scrollDirection: ScrollDirection | null = null
   private scrollAdjustments = 0
@@ -373,6 +594,12 @@ export class Virtualizer<
         delta: number,
         instance: Virtualizer<TScrollElement, TItemElement>,
       ) => boolean)
+
+  /**
+   * 这里存储的是当前已经渲染的页面中的node节点
+   *
+   * @memberof Virtualizer
+   */
   elementsCache = new Map<Key, TItemElement>()
   private observer = (() => {
     let _ro: ResizeObserver | null = null
@@ -387,6 +614,7 @@ export class Virtualizer<
       }
 
       return (_ro = new this.targetWindow.ResizeObserver((entries) => {
+        // 监视每一个滚动元素，当元素尺寸大小发生变化时，重新获取元素的最新尺寸
         entries.forEach((entry) => {
           const run = () => {
             this._measureElement(entry.target as TItemElement, entry)
@@ -408,6 +636,13 @@ export class Virtualizer<
       unobserve: (target: Element) => get()?.unobserve(target),
     }
   })()
+
+  /**
+   * 可视区域的渲染范围
+   *
+   * @type {({ startIndex: number; endIndex: number } | null)}
+   * @memberof Virtualizer
+   */
   range: { startIndex: number; endIndex: number } | null = null
 
   constructor(opts: VirtualizerOptions<TScrollElement, TItemElement>) {
@@ -447,14 +682,26 @@ export class Virtualizer<
     }
   }
 
+  /**
+   *
+   * @param sync
+   */
   private notify = (sync: boolean) => {
     this.options.onChange?.(this, sync)
   }
 
+  /**
+   * 当发生如下事件，执行的处理函数， 由适配器触发重渲染
+   *  1. 父元素尺寸变化
+   *  2. 滚动事件
+   *
+   * @private
+   * @memberof Virtualizer
+   */
   private maybeNotify = memo(
     () => {
+      // 重新计算可视区域的 起始和结束索引
       this.calculateRange()
-
       return [
         this.isScrolling,
         this.range ? this.range.startIndex : null,
@@ -475,6 +722,7 @@ export class Virtualizer<
     },
   )
 
+  // 事件清理，取消观察，取消订阅，清理内存
   private cleanup = () => {
     this.unsubs.filter(Boolean).forEach((d) => d!())
     this.unsubs = []
@@ -490,6 +738,8 @@ export class Virtualizer<
   }
 
   _willUpdate = () => {
+    debugger
+    // 获取滚动区域的父元素，在该区域内虚拟滚动
     const scrollElement = this.options.enabled
       ? this.options.getScrollElement()
       : null
@@ -498,6 +748,7 @@ export class Virtualizer<
       this.cleanup()
 
       if (!scrollElement) {
+        // 当 this.isScrolling或this.range发生变化时，通知外界 this.options.onChange()
         this.maybeNotify()
         return
       }
@@ -513,13 +764,14 @@ export class Virtualizer<
       this.elementsCache.forEach((cached) => {
         this.observer.observe(cached)
       })
-
+      // 调整滚动条位置
       this._scrollToOffset(this.getScrollOffset(), {
         adjustments: undefined,
         behavior: undefined,
       })
 
       this.unsubs.push(
+        // 监听父元素，当父元素尺寸变化时，执行maybeNotify
         this.options.observeElementRect(this, (rect) => {
           this.scrollRect = rect
           this.maybeNotify()
@@ -527,13 +779,17 @@ export class Virtualizer<
       )
 
       this.unsubs.push(
+        // 监听滚动事件
         this.options.observeElementOffset(this, (offset, isScrolling) => {
           this.scrollAdjustments = 0
+
+          // 上一次的滚动偏移量和本次的比较，计算出滚动方向
           this.scrollDirection = isScrolling
             ? this.getScrollOffset() < offset
               ? 'forward'
               : 'backward'
             : null
+          // 更新滚动偏移量 scrollLeft 或 scrollTop
           this.scrollOffset = offset
           this.isScrolling = isScrolling
 
@@ -543,6 +799,10 @@ export class Virtualizer<
     }
   }
 
+  /**
+   * 滚动条所在的节点的尺寸，可以理解为 待渲染的可视区域的尺寸
+   * @returns
+   */
   private getSize = () => {
     if (!this.options.enabled) {
       this.scrollRect = null
@@ -554,6 +814,10 @@ export class Virtualizer<
     return this.scrollRect[this.options.horizontal ? 'width' : 'height']
   }
 
+  /**
+   * 获取滚动偏移量，scrollLeft 或 scrollTop
+   * @returns
+   */
   private getScrollOffset = () => {
     if (!this.options.enabled) {
       this.scrollOffset = null
@@ -633,6 +897,17 @@ export class Virtualizer<
     },
   )
 
+  /**
+   * 计算所有元素的位置信息（index: i,
+          start,
+          size,
+          end,
+          key,
+          lane,）
+   *
+   * @private
+   * @memberof Virtualizer
+   */
   private getMeasurements = memo(
     () => [this.getMeasurementOptions(), this.itemSizeCache],
     (
@@ -663,15 +938,22 @@ export class Virtualizer<
       for (let i = min; i < count; i++) {
         const key = getItemKey(i)
 
+        /**
+         * 最后一个已经完成位置信息测量的节点的测量信息，整个数据非常重要。
+         * 下一个待测量的元素位置信息需要基于它的数据才能计算出起始位置和结束位置。
+         * 如果没有其它额外配置的话，下一个元素的起始位置就是furthestMeasurement的结束位置
+         */
         const furthestMeasurement =
           this.options.lanes === 1
             ? measurements[i - 1]
             : this.getFurthestMeasurement(measurements, i)
 
+        // 计算起始位置
         const start = furthestMeasurement
           ? furthestMeasurement.end + this.options.gap
           : paddingStart + scrollMargin
 
+        // 元素的宽度/高度
         const measuredSize = itemSizeCache.get(key)
         const size =
           typeof measuredSize === 'number'
@@ -704,6 +986,11 @@ export class Virtualizer<
     },
   )
 
+  /**
+   * 计算可视区域渲染的范围{ startIndex, endIndex }
+   *
+   * @memberof Virtualizer
+   */
   calculateRange = memo(
     () => [
       this.getMeasurements(),
@@ -728,10 +1015,22 @@ export class Virtualizer<
     },
   )
 
+  /**
+   * ```
+   * 获取真实渲染区域(可视区域+缓冲区)需要渲染的索引集合
+   * 例如：如果总共有10000个子元素，缓冲区为5，
+   * 可视区域起始索引{start:0,end:10},则getVirtualIndexes = [1,2,3,...,10,11,12,13,14,15]
+   * 可视区域起始索引{start:10,end:20},则getVirtualIndexes = [5,6,7,8,9,10,11,12,...,20,21,22,23,24,25]
+   *
+   * ```
+   *
+   * @memberof Virtualizer
+   */
   getVirtualIndexes = memo(
     () => {
       let startIndex: number | null = null
       let endIndex: number | null = null
+      // 可视区域的起始索引
       const range = this.calculateRange()
       if (range) {
         startIndex = range.startIndex
@@ -762,6 +1061,11 @@ export class Virtualizer<
     },
   )
 
+  /**
+   * 获取元素节点的索引
+   * @param node
+   * @returns
+   */
   indexFromElement = (node: TItemElement) => {
     const attributeName = this.options.indexAttribute
     const indexStr = node.getAttribute(attributeName)
@@ -776,26 +1080,37 @@ export class Virtualizer<
     return parseInt(indexStr, 10)
   }
 
+  /**
+   * 测量元素，获取元素节点的尺寸
+   * @param node
+   * @param entry
+   * @returns
+   */
   private _measureElement = (
     node: TItemElement,
     entry: ResizeObserverEntry | undefined,
   ) => {
+    // 当前节点对应的索引
     const index = this.indexFromElement(node)
+    // 根据索引拿到之前的缓存的测量数据（起始位置、结束位置、宽度/高度 等等）
     const item = this.measurementsCache[index]
     if (!item) {
       return
     }
     const key = item.key
+    // 根据key拿到上一次的node(HTMLElement节点)信息
     const prevNode = this.elementsCache.get(key)
-
+    // key对应的前后html节点不相等
     if (prevNode !== node) {
       if (prevNode) {
         this.observer.unobserve(prevNode)
       }
       this.observer.observe(node)
+      // 更新elementsCache
       this.elementsCache.set(key, node)
     }
 
+    // isConnected： 如果节点与DOM树连接则返回true,否则返回false。一个元素如果没有插入到dom树中，就是false
     if (node.isConnected) {
       this.resizeItem(index, this.options.measureElement(node, entry, this))
     }
@@ -808,7 +1123,7 @@ export class Virtualizer<
     }
     const itemSize = this.itemSizeCache.get(item.key) ?? item.size
     const delta = size - itemSize
-
+    // 变化前后尺寸不相等，变大或者变小了
     if (delta !== 0) {
       if (
         this.shouldAdjustScrollPositionOnItemSizeChange !== undefined
@@ -818,7 +1133,7 @@ export class Virtualizer<
         if (process.env.NODE_ENV !== 'production' && this.options.debug) {
           console.info('correction', delta)
         }
-
+        // 更新滚动条位置
         this._scrollToOffset(this.getScrollOffset(), {
           adjustments: (this.scrollAdjustments += delta),
           behavior: undefined,
@@ -826,16 +1141,74 @@ export class Virtualizer<
       }
 
       this.pendingMeasuredCacheIndexes.push(item.index)
+      // 更新缓存
       this.itemSizeCache = new Map(this.itemSizeCache.set(item.key, size))
 
       this.notify(false)
     }
   }
 
+  /**
+   * ```
+   * 当item不定宽高时,这里以react为例，每一个item都需要绑定`ref={virtualizer.measureElement}`
+   * 作用就是将每一个item的dom元素传入进来，virtualizer监听这些dom的尺寸变化
+   ```tsx
+   <div
+        ref={parentRef}
+        className="List"
+        style={{
+          height: 400,
+          width: 400,
+          overflowY: 'auto',
+          contain: 'strict',
+        }}
+      >
+        <div
+          style={{
+            height: virtualizer.getTotalSize(),
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              transform: `translateY(${items[0]?.start ?? 0}px)`,
+            }}
+          >
+            {items.map((virtualRow) => (
+              <div
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={virtualizer.measureElement}
+                className={
+                  virtualRow.index % 2 ? 'ListItemOdd' : 'ListItemEven'
+                }
+              >
+                <div style={{ padding: '10px 0' }}>
+                  <div>Row {virtualRow.index}</div>
+                  <div>{sentences[virtualRow.index]}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      ```
+   * ```
+   * @param node 
+   * @returns 
+   */
   measureElement = (node: TItemElement | null | undefined) => {
+    debugger
+    //这里以react为例， 组件卸载或原有的ref发生变化，也会执行该回调函数，此时node为null
     if (!node) {
       this.elementsCache.forEach((cached, key) => {
         if (!cached.isConnected) {
+          // 将那些已经不在dom树中的游离节点取消监听并删除
           this.observer.unobserve(cached)
           this.elementsCache.delete(key)
         }
@@ -846,9 +1219,15 @@ export class Virtualizer<
     this._measureElement(node, undefined)
   }
 
+  /**
+   * 获取当前真实渲染区域（可视区域 + 缓冲区）的虚拟滚动项元素
+   *
+   * @memberof Virtualizer
+   */
   getVirtualItems = memo(
     () => [this.getVirtualIndexes(), this.getMeasurements()],
     (indexes, measurements) => {
+      debugger
       const virtualItems: Array<VirtualItem> = []
 
       for (let k = 0, len = indexes.length; k < len; k++) {
@@ -866,6 +1245,14 @@ export class Virtualizer<
     },
   )
 
+  /**
+   * ```
+   * 传入滚动偏移量，返回对应的VirtualItem
+   * 找到 VirtualItem.start 近似 offset 的VirtualItem
+   * ```
+   * @param offset
+   * @returns
+   */
   getVirtualItemForOffset = (offset: number) => {
     const measurements = this.getMeasurements()
     if (measurements.length === 0) {
@@ -1030,6 +1417,10 @@ export class Virtualizer<
     })
   }
 
+  /**
+   * 获取总宽度/高度
+   * @returns
+   */
   getTotalSize = () => {
     const measurements = this.getMeasurements()
 
@@ -1062,6 +1453,11 @@ export class Virtualizer<
     )
   }
 
+  /**
+   * 滚动位置
+   * @param offset
+   * @param param1
+   */
   private _scrollToOffset = (
     offset: number,
     {
@@ -1107,10 +1503,15 @@ const findNearestBinarySearch = (
   }
 }
 
+/**
+ * 可视区域的{ startIndex, endIndex }
+ * @param param0
+ * @returns
+ */
 function calculateRange({
   measurements,
   outerSize,
-  scrollOffset,
+  scrollOffset, // 滚动偏移量，scrollLeft 或 scrollTop
   lanes,
 }: {
   measurements: Array<VirtualItem>
@@ -1118,6 +1519,7 @@ function calculateRange({
   scrollOffset: number
   lanes: number
 }) {
+  // 最后一个item的索引
   const lastIndex = measurements.length - 1
   const getOffset = (index: number) => measurements[index]!.start
 
@@ -1129,6 +1531,9 @@ function calculateRange({
     }
   }
 
+  /**
+   * 找到 measurements[index]!.start == scrollOffset 时的indx
+   */
   let startIndex = findNearestBinarySearch(
     0,
     lastIndex,
